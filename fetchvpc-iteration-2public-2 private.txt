@@ -1,0 +1,164 @@
+//dmz vpc code for fetching vpc subnets and corresponding cidrs
+
+
+
+pipeline {
+    agent any
+    stages {
+        stage('Fetch AWS DMZ VPC') {
+            steps {
+                script {
+                    // Fetch VPC information using AWS CLI
+                    def vpcInfo = sh(script: "aws ec2 --output text --query 'Vpcs[*].{VpcId:VpcId,Name:Tags[?Key==`Name`].Value|[0],CidrBlock:CidrBlock}' describe-vpcs", returnStdout: true).trim()
+                    def vpcList = vpcInfo.tokenize('\n').collect { line ->
+                        def parts = line.tokenize('\t')
+                        def vpcId = parts[2]
+                        def vpcName = parts[1] ?: 'Unnamed'
+                        def cidrBlock = parts[0] ?: 'No CIDR Block'
+                        "[${parts[1]} - ${parts[2]} - ${parts[0]}] \n"
+                    }
+
+                    // Extract VPC IDs from the VPC information
+                    def vpcIds = vpcInfo.tokenize('\n').collect { line ->
+                        line.tokenize('\t')[2]
+                    }
+
+                    // Dynamically set choices for VPC using input step
+                    def selectedVPC = input(
+                        id: 'vpcInput',
+                        message: "Existing VPC ID for the DMZ VPC:\n${vpcList.join('\n')}",
+                        parameters: [
+                            [$class: 'ChoiceParameterDefinition',
+                                name: 'dmz_vpc_id',
+                                choices: vpcIds.join('\n'),
+                                description: 'Choose Existing DMZ VPC ID']
+                        ]
+                    )
+                    echo "Selected DMZ VPC ID: ${selectedVPC}"
+                    env.dmzVPCId = selectedVPC
+                    echo "selected dmz vpc id is $dmzVPCId"
+
+                    // Extract CIDR block for the selected VPC
+                    def selectedVPCInfo = vpcInfo.tokenize('\n').find { line ->
+                        line.tokenize('\t')[2] == selectedVPC
+                    }
+                    def selectedVPCCIDR = selectedVPCInfo.tokenize('\t')[0]
+                    echo "Selected DMZ VPC CIDR: ${selectedVPCCIDR}"
+                    env.dmzVPCCIDR = selectedVPCCIDR
+
+                    // Fetch subnet information for the selected VPC using AWS CLI
+                   def subnetInfo = sh(script: "aws ec2 describe-subnets --filters Name=vpc-id,Values=${dmzVPCId} --query 'Subnets[*].[SubnetId,Tags[?Key==`Name`].Value|[0],CidrBlock]' --output text", returnStdout: true).trim()
+
+                    // Extract Subnet IDs from the Subnet information
+                    def subnetList = subnetInfo.tokenize('\n').collect { line ->
+                        def parts = line.tokenize('\t')
+                        def subnetId = parts[0]
+                        def subnetName = parts[1] ?: 'Unnamed'
+                        def subnetCidr = parts[2]
+                        "[${subnetName} - ${subnetId} - ${subnetCidr}] \n"
+                    }
+
+                    // Let the user select two subnets one by one
+                    def selectedSubnets = []
+                    def selectedSubnetInfoMap = [:]
+
+                    for (int i = 0; i < 2; i++) {
+                        def selectedSubnet = input(
+                            id: "subnetInput${i + 1}",
+                            message: "Choose dmz public Subnet ID ${i + 1} from the list:\n${subnetList.join('\n')}",
+                            parameters: [
+                                [$class: 'ChoiceParameterDefinition',
+                                    name: "dmz_public_subnet_ids${i + 1}",
+                                    choices: subnetInfo.tokenize('\n').collect { line -> line.tokenize('\t')[0] }.join('\n'),
+                                    description: "Choose dmz public Subnet ID ${i + 1}"]
+                            ]
+                        )
+                        selectedSubnets.add(selectedSubnet)
+                        
+                        
+
+                        // Print each selected subnet ID individually
+                        echo "Selected dmz public Subnet ID ${i + 1}: ${selectedSubnet}"
+
+                        // Extract CIDR block for the selected Subnet
+                        def selectedSubnetInfo = subnetInfo.tokenize('\n').find { line ->
+                            line.tokenize('\t')[0] == selectedSubnet
+                        }
+
+                        def selectedSubnetCIDR = selectedSubnetInfo.tokenize('\t')[2]
+                        echo "Selected dmz public Subnet CIDR ${i + 1}: ${selectedSubnetCIDR}"
+
+                        // Store the subnet ID and CIDR in the map
+                        selectedSubnetInfoMap[selectedSubnet] = selectedSubnetCIDR
+                    }
+
+                    // Store the selected subnet IDs and CIDRs as a list of maps in the environment variable
+                    env.selecteddmzPublicSubnets = selectedSubnets
+                    env.selectedSubnetInfoMap = selectedSubnetInfoMap
+
+                    // Optionally, you can still store a comma-separated list of subnet IDs
+                    def selectedSubnetIds = selectedSubnets.collect { "\"${it}\"" }.join(', ')
+                    env.selecteddmzpublicSubnetIds = selectedSubnets.collect { "${it}" }.join(', ')
+
+                    // Optionally, you can still store a comma-separated list of subnet CIDRs
+                    def selectedSubnetCidrs = selectedSubnetInfoMap.collect { "\"${it.value}\"" }.join(', ')
+                    env.selecteddmzpublicSubnetCidrs = selectedSubnetInfoMap.collect { "${it.value}" }.join(', ')
+             
+                    echo "Selected dmz public Subnet IDs: [${selectedSubnetIds}]"
+                    echo "Selected dmz public Subnet CIDRs: [${selectedSubnetCidrs}]"
+                      
+                      
+                    //   Let the user select two private subnets one by one
+                def selectedPrivateSubnets = []
+                def selectedPrivateSubnetInfoMap = [:]
+
+                for (int i = 0; i < 2; i++) {
+                    def selectedPrivateSubnet = input(
+                        id: "privateSubnetInput${i + 1}",
+                        message: "Choose dmz private Subnet ID ${i + 1} from the list:\n${subnetList.join('\n')}",
+                        parameters: [
+                            [$class: 'ChoiceParameterDefinition',
+                                name: "dmz_private_subnet_ids${i + 1}",
+                                choices: subnetInfo.tokenize('\n').collect { line -> line.tokenize('\t')[0] }.join('\n'),
+                                description: "Choose private Subnet ID ${i + 1}"]
+                        ]
+                    )
+                    selectedPrivateSubnets.add(selectedPrivateSubnet)
+
+                    // Print each selected private subnet ID individually
+                    echo "Selected dmz Private Subnet ID ${i + 1}: ${selectedPrivateSubnet}"
+
+                    // Extract CIDR block for the selected Private Subnet
+                    def selectedPrivateSubnetInfo = subnetInfo.tokenize('\n').find { line ->
+                            line.tokenize('\t')[0] == selectedPrivateSubnet
+                        }
+
+                    def selectedPrivateSubnetCIDR = selectedPrivateSubnetInfo.tokenize('\t')[2]
+                    echo "Selected  dmz Private Subnet CIDR ${i + 1}: ${selectedPrivateSubnetCIDR}"
+
+                    // Store the private subnet ID and CIDR in the map
+                    selectedPrivateSubnetInfoMap[selectedPrivateSubnet] = selectedPrivateSubnetCIDR
+                }
+
+                // Store the selected private subnet IDs and CIDRs as a list of maps in the environment variable
+                env.selecteddmzPrivateSubnets = selectedPrivateSubnets
+                env.selectedPrivateSubnetInfoMap = selectedPrivateSubnetInfoMap
+
+                // Optionally, you can still store a comma-separated list of private subnet IDs
+                def selectedPrivateSubnetIds = selectedPrivateSubnets.collect { "\"${it}\"" }.join(', ')
+                env.selecteddmzPrivateSubnetIds = selectedPrivateSubnets.collect { "${it}" }.join(', ')
+
+                // Optionally, you can still store a comma-separated list of private subnet CIDRs
+                def selectedPrivateSubnetCidrs = selectedPrivateSubnetInfoMap.collect { "\"${it.value}\"" }.join(', ')
+                env.selecteddmzPrivateSubnetCidrs = selectedPrivateSubnetInfoMap.collect { "${it.value}" }.join(',')
+
+                echo "Selected dmz Private Subnet IDs: [${selectedPrivateSubnetIds}]"
+                echo "Selected dmz Private Subnet CIDRs: [${selectedPrivateSubnetCidrs}]"
+                 echo "Selected dmz Public Subnet CIDRs: [${selecteddmzpublicSubnetCidrs}]"
+                 echo "Selected dmz Private Subnet CIDRs: [${selecteddmzPrivateSubnetCidrs}]"
+                 echo "Selected dmz Private Subnet ids: [${selecteddmzPrivateSubnetIds}]"
+                }
+            }
+        }
+    }
+}
